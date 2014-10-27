@@ -7,6 +7,10 @@ module LogStashLogger
 
   class Formatter < ::Logger::Formatter
     include TaggedLogging::Formatter
+    
+    def self.app_name
+      @app_name ||= Settings.logstash.fetch(:app_name, Rails.application.class.parent_name)
+    end
 
     def call(severity, time, progname, message)
       event = build_event(message, severity, time)
@@ -35,6 +39,8 @@ module LogStashLogger
       #event.type = progname
 
       event['host'] ||= HOST
+      
+      event['app'] ||= self.class.app_name
 
       current_tags.each do |tag|
         event.tag(tag)
