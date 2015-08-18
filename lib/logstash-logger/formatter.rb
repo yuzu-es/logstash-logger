@@ -42,15 +42,15 @@ module LogStashLogger
       
       event['app'] ||= self.class.app_name
 
-      current_tags.each do |tag|
-        event.tag(tag)
-      end
+      current_tags.each { |tag| event.tag(tag) }
+      
+      LogStashLogger.configuration.customize_event_block.call(event) if LogStashLogger.configuration.customize_event_block.respond_to?(:call)
 
       # In case Time#to_json has been overridden
       if event.timestamp.is_a?(Time)
         event.timestamp = event.timestamp.iso8601(3)
       end
-
+      
       event
     end
   end

@@ -11,16 +11,33 @@ module LogStashLogger
     autoload :TCP, 'logstash-logger/device/tcp'
     autoload :Unix, 'logstash-logger/device/unix'
     autoload :Redis, 'logstash-logger/device/redis'
+    autoload :Kafka, 'logstash-logger/device/kafka'
     autoload :File, 'logstash-logger/device/file'
     autoload :IO, 'logstash-logger/device/io'
     autoload :Stdout, 'logstash-logger/device/stdout'
     autoload :Stderr, 'logstash-logger/device/stderr'
+    autoload :Balancer, 'logstash-logger/device/balancer'
+    autoload :MultiDelegator, 'logstash-logger/device/multi_delegator'
 
     def self.new(opts)
       opts = opts.dup
 
+      if opts.is_a?(Array)
+        # Multiple device configs supplied... create a MultiDelegator
+        devices = opts.map{|opt| build_device(opt)}
+        Device::MultiDelegator.new(*devices)
+      elsif Hash
+        # Create a single device
+        build_device(opts)
+      else
+        raise ArgumentError, "Invalid device options: must be a Hash or an Array of Hashes"
+      end
+    end
+
+    def self.build_device(opts)
       if parsed_uri_opts = parse_uri_config(opts)
-        opts = parsed_uri_opts
+        opts.delete(:uri)
+        opts.merge!(parsed_uri_opts)
       end
 
       type = opts.delete(:type) || DEFAULT_TYPE
@@ -42,9 +59,11 @@ module LogStashLogger
         when :unix then Unix
         when :file then File
         when :redis then Redis
+        when :kafka then Kafka
         when :io then IO
         when :stdout then Stdout
         when :stderr then Stderr
+        when :balancer then Balancer
         else fail ArgumentError, 'Invalid type'
       end
     end

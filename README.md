@@ -44,9 +44,16 @@ tcp_logger = LogStashLogger.new(type: :tcp, host: 'localhost', port: 5229)
 file_logger = LogStashLogger.new(type: :file, path: 'log/development.log', sync: true)
 unix_logger = LogStashLogger.new(type: :unix, path: '/tmp/sock')
 redis_logger = LogStashLogger.new(type: :redis)
+kafka_logger = LogStashLogger.new(type: :kafka)
 stdout_logger = LogStashLogger.new(type: :stdout)
 stderr_logger = LogStashLogger.new(type: :stderr)
 io_logger = LogStashLogger.new(type: :io, io: io)
+
+# Multiple Outputs
+multi_logger = LogStashLogger.new([{type: :file, path: 'log/development.log'}, {type: :udp, host: 'localhost', port: 5228}])
+
+# Balancing messages between several outputs
+balancer_logger = LogStashLogger.new(type: :balancer, outputs: [{type: :udp, host: 'host1', port: 5228}, {type: :udp, host: 'host2', port: 5228}])
 
 # The following messages are written to UDP port 5228:
 
@@ -73,11 +80,12 @@ such as Heroku where you may want to read configuration values from the environm
 is `type://host:port/path`. Some sample URI configurations are given below.
 
 ```
-udp://localhost:5228       
-tcp://localhost:5229       
+udp://localhost:5228
+tcp://localhost:5229
 unix:///tmp/socket
-file:///path/to/file        
-redis://localhost:6379     
+file:///path/to/file
+redis://localhost:6379
+kafka://localhost:9092
 stdout:/
 stderr:/
 ```
@@ -139,6 +147,45 @@ input {
   }
 }
 ```
+
+## Custom Log Fields
+
+`LogStashLogger` by default will log a JSON object with the format below.
+
+```json
+{
+  "message":"Some Message",
+  "@timestamp":"2015-01-29T10:43:32.196-05:00",
+  "@version":"1",
+  "severity":"INFO",
+  "host":"hostname"
+}
+```
+
+Some applications may need to attach additional metadata to each message.
+The `LogStash::Event` can be manipulated directly by specifying a `customize_event` block in the `LogStashLogger` configuration.
+
+```ruby
+config = LogStashLogger.configure do |config|
+  config.customize_event do |event|
+    event["other_field"] = "some_other_value"
+  end
+end
+```
+
+This configuration would result in the following output.
+
+```json
+{
+    "message": "Some Message",
+    "@timestamp": "2015-01-29T10:43:32.196-05:00",
+    "@version": "1",
+    "severity": "INFO",
+    "host": "hostname",
+    "other_field": "some_other_value"
+}
+```
+
 
 ## Rails Integration
 
@@ -212,6 +259,10 @@ config.logstash.path = '/tmp/sock'
 
 #### Redis
 
+Add the redis gem to your Gemfile:
+
+    gem 'redis'
+
 ```ruby
 # Required
 config.logstash.type = :redis
@@ -228,6 +279,30 @@ config.logstash.host = 'localhost'
 
 # Optional, Redis will default to port 6379
 config.logstash.port = 6379
+```
+
+#### Kafka
+
+Add the poseidon gem to your Gemfile:
+
+    gem 'poseidon'
+
+```ruby
+# Required
+config.logstash.type = :kafka
+
+# Optional, will default to the 'logstash' topic
+config.logstash.path = 'logstash'
+
+# Optional, will default to the 'logstash-logger' producer
+config.logstash.producer = 'logstash-logger'
+
+# Optional, will default to localhost:9092 host/port
+config.logstash.hosts = ['localhost:9092']
+
+# Optional, will default to 1s backoff
+config.logstash.backoff = 1
+
 ```
 
 #### File
@@ -250,11 +325,56 @@ config.logstash.type = :io
 config.logstash.io = io
 ```
 
+#### Multiple Outputs
+
+```ruby
+config.logstash = [
+  {
+    type: :file,
+    path: 'log/production.log'
+  },
+  {
+    type: :udp,
+    port: 5228,
+    host: 'localhost'
+  }
+]
+```
+
+### Logging HTTP request data
+
+In web applications, you can log data from HTTP requests (such as headers) using the
+[RequestStore](https://github.com/steveklabnik/request_store) middleware. The following
+example assumes Rails.
+
+```ruby
+# in Gemfile
+gem 'request_store'
+```
+
+```ruby
+# in application.rb
+LogStashLogger.configure do |config|
+  config.customize_event do |event|
+    event["session_id"] = RequestStore.store[:load_balancer_session_id]
+  end
+end
+```
+
+```ruby
+# in app/controllers/application_controller.rb
+before_filter :track_load_balancer_session_id
+
+def track_load_balancer_session_id
+  RequestStore.store[:load_balancer_session_id] = request.headers["X-LOADBALANCER-SESSIONID"]
+end
+```
+
 ## Ruby Compatibility
 
 Verified to work with:
 
-* MRI Ruby 1.9.3, 2.0+, 2.1+
+* MRI Ruby 1.9.3, 2.0.x, 2.1.x, 2.2.x
 * JRuby 1.7+
 * Rubinius 2.2+
 
@@ -278,6 +398,23 @@ disadvantages of each type:
 For a more detailed discussion of UDP vs TCP, I recommend reading this article:
 [UDP vs. TCP](http://gafferongames.com/networking-for-game-programmers/udp-vs-tcp/)
 
+## Troubleshooting
+
+### JSON::GeneratorError
+Your application is probably attempting to log data that is not encoded in a valid way. When this happens, Ruby's
+standard JSON library will raise an exception. You may be able to overcome this by swapping out a different JSON encoder
+such as Oj. Use the [oj_mimic_json](https://github.com/ohler55/oj_mimic_json) gem to use Oj for JSON generation.
+
+### No logs getting sent on Heroku
+Heroku recommends installing the [rails_12factor](https://github.com/heroku/rails_12factor) so that logs get sent to STDOUT.
+Unfortunately, this overrides LogStashLogger, preventing logs from being sent to their configured destination. The solution
+is to remove `rails_12factor` from your Gemfile.
+
+### Logging eventually stops in production
+This is most likely not a problem with LogStashLogger, but rather a different gem changing the log level of `Rails.logger`.
+This is especially likely if you're using a threaded server such as Puma, since gems often change the log level of
+`Rails.logger` in a non thread-safe way. See [#17](https://github.com/dwbutler/logstash-logger/issues/17) for more information.
+
 ## Breaking changes
 
 ### Version 0.5+
@@ -300,6 +437,20 @@ logger = LogStashLogger.new('localhost', 5228)
 # Explicitly specify TCP instead of UDP
 logger = LogStashLogger.new('localhost', 5228, :tcp)
 ```
+
+## Contributors
+* [David Butler](https://github.com/dwbutler)
+* [pctj101](https://github.com/pctj101)
+* [Gary Rennie](https://github.com/Gazler)
+* [Nick Ethier](https://github.com/nickethier)
+* [Arron Mabrey](https://github.com/arronmabrey)
+* [Jan Schulte](https://github.com/schultyy)
+* [Kurt Preston](https://github.com/KurtPreston)
+* [Chris Blatchley](https://github.com/chrisblatchley)
+* [Felix Bechstein](https://github.com/felixb)
+* [Vadim Kazakov](https://github.com/yads)
+* [Anil Rhemtulla](https://github.com/AnilRh)
+* [Nikita Vorobei](https://github.com/Nikita-V)
 
 ## Contributing
 

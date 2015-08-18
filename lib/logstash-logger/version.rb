@@ -1,3 +1,3 @@
 module LogStashLogger
-  VERSION = "0.7.0"
+  VERSION = "0.11.0"
 end
