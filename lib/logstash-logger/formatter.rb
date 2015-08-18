@@ -7,7 +7,7 @@ module LogStashLogger
 
   class Formatter < ::Logger::Formatter
     include TaggedLogging::Formatter
-    
+
     def self.app_name
       @app_name ||= Settings.logstash.fetch(:app_name, Rails.application.class.parent_name)
     end
@@ -39,18 +39,18 @@ module LogStashLogger
       #event.type = progname
 
       event['host'] ||= HOST
-      
+
       event['app'] ||= self.class.app_name
 
       current_tags.each { |tag| event.tag(tag) }
-      
+
       LogStashLogger.configuration.customize_event_block.call(event) if LogStashLogger.configuration.customize_event_block.respond_to?(:call)
 
       # In case Time#to_json has been overridden
       if event.timestamp.is_a?(Time)
         event.timestamp = event.timestamp.iso8601(3)
       end
-      
+
       event
     end
   end
